@@ -1,9 +1,11 @@
 module Miso.WebAudio.Player
-  ( Player
+  ( -- * Player
+    Player
   , newPlayer
   , playNotes
   , setMuted
   , closePlayer
+    -- * Scheduling
   , scheduleNotes
   ) where
 
@@ -12,8 +14,24 @@ import Data.Foldable (for_, traverse_)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Miso.DSL (Function (..), JSVal, fromJSValUnchecked, freeFunction, global, isUndefined, jsg, now_ffi, syncCallback1, (!), (#))
 import Miso.String (MisoString)
-import Miso.WebAudio.Node
-import Miso.WebAudio.Note
+import Miso.WebAudio.Context
+  ( AudioContext
+  , BaseAudioContext
+  , ContextState (..)
+  , LatencyHint (..)
+  , close
+  , contextState
+  , currentTime
+  , destination
+  , newAudioContext
+  , resume
+  )
+import Miso.WebAudio.Filter (GainNode, createGain, frequency, gain)
+import Miso.WebAudio.Node (AudioNode, connect)
+import Miso.WebAudio.Note (Note (..))
+import Miso.WebAudio.Param (exponentialRampToValueAtTime, setValueAtTime)
+import Miso.WebAudio.Source (createOscillator, setOscillatorType, start, stop)
+import Miso.WebAudio.Types (releaseHandle)
 
 data Output = Output AudioContext GainNode
   deriving (Eq)
@@ -77,7 +95,7 @@ ensureOutput volume outputRef mutedRef =
       newAudioContext LatencyInteractive >>= \case
         Nothing -> pure Nothing
         Just context -> do
-          master <- newGain context
+          master <- createGain context
           muted <- readIORef mutedRef
           applyLevel context master (if muted then 0 else volume)
           connect master =<< destination context
@@ -89,7 +107,7 @@ applyLevel :: AudioContext -> GainNode -> Double -> IO ()
 applyLevel context master value = do
   level <- gain master
   now <- currentTime context
-  setValueAt level value now
+  setValueAtTime level value now
   releaseHandle level
 
 wake :: Output -> IO ()
@@ -136,25 +154,25 @@ closePlayer player = do
   writeIORef (playerOutput player) Nothing
 
 scheduleNotes :: (BaseAudioContext context, AudioNode output) => context -> output -> Double -> [Note] -> IO ()
-scheduleNotes context output now = traverse_ (scheduleNote context output now)
+scheduleNotes context output = traverse_ . scheduleNote context output
 
 scheduleNote :: (BaseAudioContext context, AudioNode output) => context -> output -> Double -> Note -> IO ()
 scheduleNote context output now note = do
-  let start = now + max 0 (noteStart note)
-  oscillator <- newOscillator context
-  envelope <- newGain context
-  setWave oscillator (noteWave note)
+  let begin = now + max 0 (noteStart note)
+  oscillator <- createOscillator context
+  envelope <- createGain context
+  setOscillatorType oscillator (noteWave note)
   pitch <- frequency oscillator
-  setValueAt pitch (noteFrequency note) start
+  setValueAtTime pitch (noteFrequency note) begin
   for_ (noteFrequencyTo note) $ \(target, at) ->
-    exponentialRampTo pitch (max lowestGlide target) (start + max 0 at)
+    exponentialRampToValueAtTime pitch (max lowestGlide target) (begin + max 0 at)
   level <- gain envelope
-  setValueAt level (noteGain note) start
-  exponentialRampTo level fadeFloor (start + max 0 (noteGainFadeAt note))
+  setValueAtTime level (noteGain note) begin
+  exponentialRampToValueAtTime level fadeFloor (begin + max 0 (noteGainFadeAt note))
   connect oscillator envelope
   connect envelope output
-  startAt oscillator start
-  stopAt oscillator (start + max 0 (noteStop note))
+  start oscillator begin
+  stop oscillator (begin + max 0 (noteStop note))
   releaseHandle pitch
   releaseHandle level
   releaseHandle envelope

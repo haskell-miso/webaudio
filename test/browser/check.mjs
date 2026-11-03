@@ -84,7 +84,7 @@ const preparePage = async (host, initScripts) => {
   page.on("console", (message) => {
     page.logs.push(message.text());
     if (message.text().includes("uncaught exception")) page.errors.push(message.text());
-    if (message.type() === "error") page.errors.push(message.text());
+    if (message.type() === "error" && !message.location().url.endsWith("/absent.wav")) page.errors.push(message.text());
     if (message.type() === "warning") page.warnings.push(message.text());
   });
   await page.addInitScript(instrument);

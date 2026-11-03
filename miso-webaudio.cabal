@@ -2,8 +2,8 @@ cabal-version:      3.0
 name:               miso-webaudio
 version:            0.1.0.0
 synopsis:           Web Audio for miso
-description:        Typed bindings to the Web Audio graph, and a fire-and-forget note player on top. Written with Miso.DSL alone, so it needs no foreign imports, no eval and no flags on the JS and WebAssembly backends.
-homepage:           https://gitlab.com/dpwiz/miso-webaudio
+description:        Typed bindings to the Web Audio graph.
+homepage:           https://github.com/haskell-miso/webaudio
 license:            BSD-3-Clause
 license-file:       LICENSE
 author:             IC Rainbow
@@ -14,7 +14,7 @@ extra-doc-files:    CHANGELOG.md, README.md
 
 source-repository head
   type:     git
-  location: https://gitlab.com/dpwiz/miso-webaudio.git
+  location: https://github.com/haskell-miso/webaudio.git
 
 common warnings
   ghc-options:
@@ -27,14 +27,40 @@ common language
     LambdaCase
     OverloadedStrings
 
+common wasm
+  if arch(wasm32)
+    ghc-options:
+      -no-hs-main -optl-mexec-model=reactor "-optl-Wl,--export=hs_start"
+    cpp-options:
+      -DWASM
+
+common js
+  if arch(javascript)
+    ld-options:
+      -sEXPORTED_RUNTIME_METHODS=HEAP8
+
 library
   import:
     language, warnings
   exposed-modules:
     Miso.WebAudio
+    Miso.WebAudio.Analyser
+    Miso.WebAudio.Buffer
+    Miso.WebAudio.Channel
+    Miso.WebAudio.Context
+    Miso.WebAudio.Filter
+    Miso.WebAudio.Media
     Miso.WebAudio.Node
     Miso.WebAudio.Note
+    Miso.WebAudio.Param
     Miso.WebAudio.Player
+    Miso.WebAudio.Source
+    Miso.WebAudio.Spatial
+    Miso.WebAudio.Stats
+    Miso.WebAudio.Types
+    Miso.WebAudio.Worklet
+  other-modules:
+    Miso.WebAudio.Internal
   hs-source-dirs:
     src
   build-depends:
@@ -42,7 +68,7 @@ library
 
 executable webaudio-check
   import:
-    language, warnings
+    language, warnings, wasm, js
   main-is:
     Main.hs
   hs-source-dirs:
@@ -51,11 +77,3 @@ executable webaudio-check
     base, miso, miso-webaudio
   if !(arch(javascript) || arch(wasm32))
     buildable: False
-  if arch(wasm32)
-    ghc-options:
-      -no-hs-main -optl-mexec-model=reactor "-optl-Wl,--export=hs_start"
-    cpp-options:
-      -DWASM
-  if arch(javascript)
-    ld-options:
-      -sEXPORTED_RUNTIME_METHODS=HEAP8

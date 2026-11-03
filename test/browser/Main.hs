@@ -1,17 +1,234 @@
 {-# LANGUAGE CPP #-}
 module Main (main) where
 
-import Control.Concurrent (forkIO)
+import Control.Concurrent (forkIO, killThread)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (SomeException, displayException, evaluate, try)
 import Control.Monad (forM_, replicateM_, void, when)
+import Data.Either (isLeft, isRight)
 import Data.Foldable (for_)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Maybe (isJust)
 import Miso.DSL
-import Miso.DSL qualified as DSL
-import Miso.String (MisoString, ms)
+  ( FromJSVal (fromJSValUnchecked)
+  , JSVal
+  , Object (unObject)
+  , ToJSVal (..)
+  , ToObject
+  , asyncCallback
+  , await
+  , create
+  , createWith
+  , global
+  , isUndefined
+  , jsg
+  , jsg0
+  , jsg1
+  , jsNull
+  , new
+  , now_ffi
+  , setField
+  , syncCallback
+  , syncCallback1
+  , (!)
+  , (#)
+  )
+import Miso.DSL qualified as DSL ((!!))
+import Miso.Effect (Effect, Schedule (..), Sink, mkComponentInfo, runEffect)
+import Miso.FFI (ArrayBuffer (..))
+import Miso.Media (Media (..))
+import Miso.String (MisoString, fromMisoString, ms)
 import Miso.WebAudio
+  ( AnalyserNode
+  , AudioBuffer
+  , AudioContext (..)
+  , AudioNode
+  , AudioParam (..)
+  , AutomationRate (..)
+  , BaseAudioContext
+  , BiquadFilterNode
+  , ChannelCountMode (..)
+  , ChannelInterpretation (..)
+  , ContextState (..)
+  , DistanceModel (..)
+  , DynamicsCompressorNode
+  , FilterType (..)
+  , LatencyHint (..)
+  , Note (..)
+  , OfflineAudioContext (..)
+  , OutputTimestamp (outputContextTime, outputPerformanceTime)
+  , Oversample (..)
+  , PanningModel (..)
+  , Wave (..)
+  , addModule
+  , addModule_
+  , attack
+  , averageLatency
+  , baseLatency
+  , bufferDuration
+  , bufferLength
+  , bufferSampleRate
+  , cancelAndHoldAtTime
+  , cancelScheduledValues
+  , channelCount
+  , close
+  , closePlayer
+  , connect
+  , connectOutputToParam
+  , connectParam
+  , connectPorts
+  , contextState
+  , contextStateSub
+  , createAnalyser
+  , createBiquadFilter
+  , createBuffer
+  , createBufferSource
+  , createChannelMerger
+  , createChannelSplitter
+  , createConstantSource
+  , createConvolver
+  , createDelay
+  , createDynamicsCompressor
+  , createGain
+  , createIIRFilter
+  , createMediaElementSource
+  , createMediaStreamDestination
+  , createMediaStreamSource
+  , createMediaStreamTrackSource
+  , createOscillator
+  , createPanner
+  , createPeriodicWave
+  , createStereoPanner
+  , createWaveShaper
+  , decodeAudioData
+  , decodeAudioData_
+  , defaultValue
+  , delayTime
+  , destination
+  , destinationStream
+  , detune
+  , disconnect
+  , disconnectFrom
+  , disconnectOutput
+  , disconnectParam
+  , disconnectPorts
+  , exponentialRampToValueAtTime
+  , fetchAudioBuffer
+  , fetchAudioBuffer_
+  , fftSize
+  , forwardX
+  , forwardY
+  , forwardZ
+  , frequency
+  , frequencyBinCount
+  , gain
+  , getByteFrequencyData
+  , getByteTimeDomainData
+  , getFloatFrequencyData
+  , getFloatTimeDomainData
+  , getFrequencyResponse
+  , getOutputTimestamp
+  , hasCancelAndHold
+  , hasSetSinkId
+  , knee
+  , linearRampToValueAtTime
+  , listener
+  , lookupParam
+  , maxChannelCount
+  , maximumLatency
+  , maxValue
+  , minimumLatency
+  , minValue
+  , newAudioContext
+  , newAudioContextAtRate
+  , newAudioWorkletNode
+  , newAudioWorkletNodeWith
+  , newOfflineAudioContext
+  , newPlayer
+  , numberOfChannels
+  , numberOfInputs
+  , numberOfOutputs
+  , offlineLength
+  , offset
+  , onComplete
+  , onComplete_
+  , onEnded
+  , onEnded_
+  , orientationX
+  , orientationY
+  , orientationZ
+  , pan
+  , paramNames
+  , paramValue
+  , playbackRate
+  , playbackStats
+  , playNotes
+  , positionX
+  , positionY
+  , positionZ
+  , q
+  , ratio
+  , readChannel
+  , reduction
+  , release
+  , resetLatency
+  , resume
+  , resumeOffline
+  , sampleRate
+  , scheduleNotes
+  , setAutomationRate
+  , setBuffer
+  , setChannelCount
+  , setChannelCountMode
+  , setChannelInterpretation
+  , setConeInnerAngle
+  , setConeOuterAngle
+  , setConeOuterGain
+  , setCurve
+  , setDistanceModel
+  , setFftSize
+  , setFilterType
+  , setListenerOrientation
+  , setListenerPosition
+  , setLoop
+  , setLoopEnd
+  , setLoopStart
+  , setMaxDecibels
+  , setMaxDistance
+  , setMinDecibels
+  , setMuted
+  , setNormalize
+  , setOscillatorType
+  , setOversample
+  , setPanningModel
+  , setPeriodicWave
+  , setRefDistance
+  , setRolloffFactor
+  , setSinkId
+  , setSmoothingTimeConstant
+  , setTargetAtTime
+  , setValue
+  , setValueAtTime
+  , setValueCurveAtTime
+  , start
+  , startAtOffset
+  , startFor
+  , startRendering
+  , startRendering_
+  , stop
+  , suspendOfflineAt
+  , suspendOfflineAt_
+  , threshold
+  , totalDuration
+  , underrunDuration
+  , underrunEvents
+  , upX
+  , upY
+  , upZ
+  , workletParameters
+  , workletPort
+  , writeChannel
+  )
 
 #ifdef WASM
 foreign export javascript "hs_start" main :: IO ()
@@ -19,6 +236,26 @@ foreign export javascript "hs_start" main :: IO ()
 
 rate :: Double
 rate = 44100
+
+must :: IO (Either MisoString result) -> IO result
+must action = action >>= either (fail . fromMisoString) pure
+
+runEffects :: Effect () () () action -> Sink action -> IO ()
+runEffects effect sink = do
+  mountPoint <- jsg "document"
+  let (_, schedules) = runEffect effect (mkComponentInfo 0 0 mountPoint () ()) ()
+  for_ schedules $ \case
+    Schedule _ job -> void (forkIO (job sink))
+    _ -> pure ()
+
+captured :: ((result -> Either MisoString result) -> (MisoString -> Either MisoString result) -> Effect () () () (Either MisoString result)) -> IO (Either MisoString result)
+captured effect = do
+  slot <- newEmptyMVar
+  runEffects (effect Right Left) (putMVar slot)
+  takeMVar slot
+
+capturedDone :: (Either MisoString () -> (MisoString -> Either MisoString ()) -> Effect () () () (Either MisoString ())) -> IO (Either MisoString ())
+capturedDone effect = captured (\successful errorful -> effect (successful ()) errorful)
 
 recipes :: [Note]
 recipes =
@@ -47,12 +284,12 @@ recipes =
 renderNotes :: IO AudioBuffer
 renderNotes = do
   context <- newOfflineAudioContext 1 (seconds 5.5) rate
-  master <- newGain context
+  master <- createGain context
   masterLevel <- gain master
-  setValueAt masterLevel 0.4 0
+  setValueAtTime masterLevel 0.4 0
   connect master =<< destination context
   scheduleNotes context master 0 recipes
-  startRendering context
+  must (startRendering_ context)
 
 seconds :: Double -> Int
 seconds duration = ceiling (duration * rate)
@@ -64,7 +301,7 @@ parkMiller seed =
 
 noiseBuffer :: BaseAudioContext context => context -> Double -> Double -> IO AudioBuffer
 noiseBuffer context seed duration = do
-  buffer <- newBuffer context 1 (seconds duration) rate
+  buffer <- createBuffer context 1 (seconds duration) rate
   writeChannel buffer 0 (take (seconds duration) (parkMiller seed))
   pure buffer
 
@@ -75,7 +312,7 @@ setParam getParam value = do
 
 newFilter :: BaseAudioContext context => context -> FilterType -> Double -> IO BiquadFilterNode
 newFilter context kind hz = do
-  node <- newBiquadFilter context
+  node <- createBiquadFilter context
   setFilterType node kind
   setParam (frequency node) hz
   pure node
@@ -83,44 +320,44 @@ newFilter context kind hz = do
 renderKnock :: IO AudioBuffer
 renderKnock = do
   context <- newOfflineAudioContext 1 (seconds 0.5) rate
-  master <- newGain context
+  master <- createGain context
   setParam (gain master) 0.5
   connect master =<< destination context
   let t0 = 0.01
       peak = 0.55
       bright = 2400
       low = 180
-  burst <- newBufferSource context
+  burst <- createBufferSource context
   setBuffer burst =<< noiseBuffer context 42 0.06
   band <- newFilter context Bandpass bright
   bandFrequency <- frequency band
-  setValueAt bandFrequency bright t0
-  exponentialRampTo bandFrequency (bright * 0.4) (t0 + 0.05)
+  setValueAtTime bandFrequency bright t0
+  exponentialRampToValueAtTime bandFrequency (bright * 0.4) (t0 + 0.05)
   setParam (q band) 1.6
-  burstLevel <- newGain context
+  burstLevel <- createGain context
   envelope burstLevel t0 0.003 peak 0.05
   connect burst band
   connect band burstLevel
   connect burstLevel master
-  startAt burst t0
-  thump <- newOscillator context
-  setWave thump Sine
+  start burst t0
+  thump <- createOscillator context
+  setOscillatorType thump Sine
   thumpFrequency <- frequency thump
-  setValueAt thumpFrequency low t0
-  exponentialRampTo thumpFrequency (low * 0.55) (t0 + 0.002 + 0.09)
-  thumpLevel <- newGain context
+  setValueAtTime thumpFrequency low t0
+  exponentialRampToValueAtTime thumpFrequency (low * 0.55) (t0 + 0.002 + 0.09)
+  thumpLevel <- createGain context
   envelope thumpLevel t0 0.002 (peak * 0.9) 0.09
   connect thump thumpLevel
   connect thumpLevel master
-  startAt thump t0
-  stopAt thump (t0 + 0.002 + 0.09 + 0.05)
-  startRendering context
+  start thump t0
+  stop thump (t0 + 0.002 + 0.09 + 0.05)
+  must (startRendering_ context)
   where
-    envelope node start rise top fall = do
+    envelope node begin rise top fall = do
       level <- gain node
-      setValueAt level 0 start
-      linearRampTo level top (start + rise)
-      exponentialRampTo level 0.0001 (start + rise + fall)
+      setValueAtTime level 0 begin
+      linearRampToValueAtTime level top (begin + rise)
+      exponentialRampToValueAtTime level 0.0001 (begin + rise + fall)
 
 saturationCurve :: Double -> [Double]
 saturationCurve soil = map shape [0 .. n - 1]
@@ -139,14 +376,14 @@ roomImpulse context = do
       frames = seconds duration
       decay = log 1000 / duration
       channel seed = zipWith (\index sample -> sample * exp (-decay * (fromIntegral index / rate))) [0 :: Int ..] (take frames (parkMiller seed))
-  buffer <- newBuffer context 2 frames rate
+  buffer <- createBuffer context 2 frames rate
   writeChannel buffer 0 (channel 7)
   writeChannel buffer 1 (channel 11)
   pure buffer
 
 newCompressor :: BaseAudioContext context => context -> Double -> Double -> Double -> Double -> Double -> IO DynamicsCompressorNode
 newCompressor context limit bend steep rise fall = do
-  node <- newDynamicsCompressor context
+  node <- createDynamicsCompressor context
   setParam (threshold node) limit
   setParam (knee node) bend
   setParam (ratio node) steep
@@ -158,14 +395,14 @@ renderGarden :: IO AudioBuffer
 renderGarden = do
   context <- newOfflineAudioContext 2 (seconds 2) rate
   output <- destination context
-  master <- newGain context
+  master <- createGain context
   setParam (gain master) 0.5
   highpass <- newFilter context Highpass 30
   shelf <- newFilter context Highshelf 6000
   setParam (gain shelf) (-2.5)
   glue <- newCompressor context (-20) 12 2.5 0.02 0.25
   limiter <- newCompressor context (-3) 0 20 0.001 0.1
-  post <- newGain context
+  post <- createGain context
   setParam (gain post) 0.63
   connect master highpass
   connect highpass shelf
@@ -174,26 +411,26 @@ renderGarden = do
   connect limiter post
   connect post output
   sendFilter <- newFilter context Highpass 200
-  room <- newConvolver context
+  room <- createConvolver context
   setBuffer room =<< roomImpulse context
   returnFilter <- newFilter context Lowpass 7000
   connect sendFilter room
   connect room returnFilter
   connect returnFilter master
-  lfo <- newOscillator context
+  lfo <- createOscillator context
   setParam (frequency lfo) 5.1
-  startAt lfo 0
+  start lfo 0
   noise <- noiseBuffer context 99 2
-  input <- newGain context
-  shaper <- newWaveShaper context
+  input <- createGain context
+  shaper <- createWaveShaper context
   setOversample shaper Oversample2x
   setCurve shaper (saturationCurve 0.5)
   lowpass <- newFilter context Lowpass 7000
   setParam (q lowpass) 0.7
-  volume <- newGain context
+  volume <- createGain context
   setParam (gain volume) 0.56
-  duck <- newGain context
-  send <- newGain context
+  duck <- createGain context
+  send <- createGain context
   setParam (gain send) (40 / 127)
   connect input shaper
   connect shaper lowpass
@@ -202,114 +439,114 @@ renderGarden = do
   connect duck master
   connect duck send
   connect send sendFilter
-  pitchBus <- newGain context
-  bend <- newConstantSource context
+  pitchBus <- createGain context
+  bend <- createConstantSource context
   setParam (offset bend) 0
   connect bend pitchBus
-  startAt bend 0
-  vibrato <- newGain context
+  start bend 0
+  vibrato <- createGain context
   setParam (gain vibrato) 12
   connect lfo vibrato
   connect vibrato pitchBus
   bendOffset <- offset bend
-  setTargetAt bendOffset 40 0.3 0.02
+  setTargetAtTime bendOffset 40 0.3 0.02
   volumeLevel <- gain volume
-  cancelScheduled volumeLevel 0.5
-  setTargetAt volumeLevel 0.4 0.5 0.03
+  cancelScheduledValues volumeLevel 0.5
+  setTargetAtTime volumeLevel 0.4 0.5 0.03
   duckLevel <- gain duck
-  cancelAndHoldAt duckLevel 0.8
-  setTargetAt duckLevel 0.5 0.8 0.02
-  setTargetAt duckLevel 1 1.0 0.1
-  let voiceOscillator wave hz start target = do
-        node <- newOscillator context
-        setWave node wave
+  cancelAndHoldAtTime duckLevel 0.8
+  setTargetAtTime duckLevel 0.5 0.8 0.02
+  setTargetAtTime duckLevel 1 1.0 0.1
+  let voiceOscillator wave hz begin target = do
+        node <- createOscillator context
+        setOscillatorType node wave
         nodeFrequency <- frequency node
-        setValueAt nodeFrequency hz start
+        setValueAtTime nodeFrequency hz begin
         connectParam pitchBus =<< detune node
         connect node target
-        startAt node start
+        start node begin
         pure node
       hold node t fade seconds' = do
         level <- gain node
-        cancelAndHoldAt level t
-        setTargetAt level 0 t (fade / 4)
+        cancelAndHoldAtTime level t
+        setTargetAtTime level 0 t (fade / 4)
         pure (t + seconds')
-  moss <- newGain context
+  moss <- createGain context
   connect moss input
   mossLevel <- gain moss
-  setValueAt mossLevel 0 0.05
-  linearRampTo mossLevel 0.5 (0.05 + 0.004)
-  setTargetAt mossLevel (0.5 * 0.25) (0.05 + 0.004) (0.5 / 3)
-  overtone <- newGain context
+  setValueAtTime mossLevel 0 0.05
+  linearRampToValueAtTime mossLevel 0.5 (0.05 + 0.004)
+  setTargetAtTime mossLevel (0.5 * 0.25) (0.05 + 0.004) (0.5 / 3)
+  overtone <- createGain context
   setParam (gain overtone) 0.35
   connect overtone moss
-  clickLevel <- newGain context
+  clickLevel <- createGain context
   clickFilter <- newFilter context Lowpass 3500
   setParam (q clickFilter) 0.7
   connect clickFilter moss
   connect clickLevel clickFilter
   clickGain <- gain clickLevel
-  setValueAt clickGain 0.35 0.05
-  setTargetAt clickGain 0 0.05 0.006
+  setValueAtTime clickGain 0.35 0.05
+  setTargetAtTime clickGain 0 0.05 0.006
   body <- voiceOscillator Sine 220 0.05 moss
   second <- voiceOscillator Sine 440 0.05 overtone
   click <- voiceOscillator Triangle 1320 0.05 clickLevel
   mossEnd <- hold moss 0.7 0.12 0.18
-  for_ [body, second, click] (`stopAt` mossEnd)
-  breath <- newGain context
+  for_ [body, second, click] (`stop` mossEnd)
+  breath <- createGain context
   setParam (gain breath) 0.2
   connect breath input
   breathFilter <- newFilter context Bandpass 880
   setParam (q breathFilter) 1.2
   connect breathFilter breath
-  air <- newBufferSource context
+  air <- createBufferSource context
   setBuffer air noise
   setLoop air True
   connect air breathFilter
   startAtOffset air 0.2 0.5
-  stopAt air 0.9
-  stolen <- newGain context
+  stop air 0.9
+  stolen <- createGain context
   connect stolen input
   stolenLevel <- gain stolen
-  setValueAt stolenLevel 0.3 0.3
+  setValueAtTime stolenLevel 0.3 0.3
   voice <- voiceOscillator Sawtooth 110 0.3 stolen
-  cancelAndHoldAt stolenLevel 1.0
-  linearRampTo stolenLevel 0 (1.0 + 0.015)
-  stopAt voice (1.0 + 0.015 + 0.005)
-  startRendering context
+  cancelAndHoldAtTime stolenLevel 1.0
+  linearRampToValueAtTime stolenLevel 0 (1.0 + 0.015)
+  stop voice (1.0 + 0.015 + 0.005)
+  must (startRendering_ context)
 
 renderRouting :: IO AudioBuffer
 renderRouting = do
   context <- newOfflineAudioContext 2 (seconds 1) rate
   output <- destination context
-  a <- newOscillator context
+  a <- createOscillator context
   setParam (frequency a) 220
-  b <- newOscillator context
-  setWave b Triangle
+  b <- createOscillator context
+  setOscillatorType b Triangle
   setParam (frequency b) 330
-  inMerge <- newChannelMerger context 2
+  inMerge <- createChannelMerger context 2
   connectPorts a 0 inMerge 0
   connectPorts b 0 inMerge 1
-  splitter <- newChannelSplitter context 2
+  splitter <- createChannelSplitter context 2
   connect inMerge splitter
-  outMerge <- newChannelMerger context 2
+  outMerge <- createChannelMerger context 2
   connectPorts splitter 0 outMerge 1
   connectPorts splitter 1 outMerge 0
   connect outMerge output
-  delay <- newDelay context 0.5
+  delay <- createDelay context 0.5
   delayParam <- delayTime delay
-  setValueAt delayParam 0.25 0
-  feedback <- newGain context
+  setValueAtTime delayParam 0.25 0
+  feedback <- createGain context
   setParam (gain feedback) 0.5
   connectPorts splitter 0 delay 0
   connect delay feedback
   connect feedback delay
   connectPorts feedback 0 outMerge 0
-  removed <- newGain context
+  removed <- createGain context
   connect a removed
   connect removed output
   disconnectFrom a removed
-  mono <- newGain context
+  mono <- createGain context
   setChannelCount mono 1
   setChannelCountMode mono ChannelExplicit
   setChannelInterpretation mono Speakers
@@ -318,23 +555,23 @@ renderRouting = do
   connect mono output
   monoLevel <- gain mono
   connectOutputToParam splitter 1 monoLevel
-  discrete <- newGain context
+  discrete <- createGain context
   setChannelCount discrete 1
   setChannelCountMode discrete ChannelExplicit
   setChannelInterpretation discrete Discrete
   setParam (gain discrete) 0.2
   connect inMerge discrete
   connect discrete output
-  second <- newChannelSplitter context 2
+  second <- createChannelSplitter context 2
   connect inMerge second
   connectPorts second 0 output 0
   connectPorts second 1 output 0
   disconnectOutput second 1
   disconnectPorts second 0 output 0
   for_ [a, b] $ \node -> do
-    startAt node 0
-    stopAt node 1
-  startRendering context
+    start node 0
+    stop node 1
+  must (startRendering_ context)
 
 renderSpace :: IO AudioBuffer
 renderSpace = do
@@ -350,17 +587,17 @@ renderSpace = do
   setParam (upX ears) 0
   setParam (upY ears) 1
   setParam (upZ ears) 0
-  sweep <- newOscillator context
+  sweep <- createOscillator context
   setParam (frequency sweep) 440
-  stereo <- newStereoPanner context
+  stereo <- createStereoPanner context
   panning <- pan stereo
-  setValueAt panning (-1) 0
-  linearRampTo panning 1 0.5
+  setValueAtTime panning (-1) 0
+  linearRampToValueAtTime panning 1 0.5
   connect sweep stereo
   connect stereo output
-  voice <- newOscillator context
+  voice <- createOscillator context
   setParam (frequency voice) 660
-  near <- newPanner context
+  near <- createPanner context
   setPanningModel near EqualPower
   setDistanceModel near InverseDistance
   setRefDistance near 1
@@ -371,31 +608,31 @@ renderSpace = do
   setConeOuterGain near 0.2
   setParam (positionZ near) (-2)
   nearX <- positionX near
-  setValueAt nearX (-3) 0
-  linearRampTo nearX 3 1
+  setValueAtTime nearX (-3) 0
+  linearRampToValueAtTime nearX 3 1
   setParam (orientationX near) 1
   setParam (orientationY near) 0
   setParam (orientationZ near) 0
   connect voice near
   connect near output
-  far <- newOscillator context
+  far <- createOscillator context
   setParam (frequency far) 880
-  distant <- newPanner context
+  distant <- createPanner context
   setDistanceModel distant LinearDistance
   setParam (positionX distant) 4
   connect far distant
   connect distant output
-  farther <- newOscillator context
+  farther <- createOscillator context
   setParam (frequency farther) 990
-  remote <- newPanner context
+  remote <- createPanner context
   setDistanceModel remote ExponentialDistance
   setParam (positionX remote) (-6)
   connect farther remote
   connect remote output
   for_ [sweep, voice, far, farther] $ \node -> do
-    startAt node 0
-    stopAt node 1
-  startRendering context
+    start node 0
+    stop node 1
+  must (startRendering_ context)
 
 renderListener :: IO AudioBuffer
 renderListener = do
@@ -404,91 +641,91 @@ renderListener = do
   ears <- listener context
   setListenerPosition ears 1 0 0
   setListenerOrientation ears 0 0 (-1) 0 1 0
-  tone <- newOscillator context
+  tone <- createOscillator context
   setParam (frequency tone) 500
-  source <- newPanner context
+  source <- createPanner context
   setParam (positionX source) (-2)
   connect tone source
   connect source output
-  startAt tone 0
-  stopAt tone 0.5
-  startRendering context
+  start tone 0
+  stop tone 0.5
+  must (startRendering_ context)
 
 renderTimbre :: IO AudioBuffer
 renderTimbre = do
   context <- newOfflineAudioContext 1 (seconds 1) rate
   output <- destination context
-  wave <- newPeriodicWave context [0, 0.5, 0.25] [0, 1, 0.5] False
-  custom <- newOscillator context
+  wave <- createPeriodicWave context [0, 0.5, 0.25] [0, 1, 0.5] False
+  custom <- createOscillator context
   setPeriodicWave custom wave
   setParam (frequency custom) 220
-  iir <- newIIRFilter context [0.1, 0.2, 0.1] [1, -0.5, 0.2]
-  shaped <- newGain context
+  iir <- createIIRFilter context [0.1, 0.2, 0.1] [1, -0.5, 0.2]
+  shaped <- createGain context
   shapedLevel <- gain shaped
-  setValueCurveAt shapedLevel [0, 1, 0.5, 0.75] 0.05 0.5
+  setValueCurveAtTime shapedLevel [0, 1, 0.5, 0.75] 0.05 0.5
   connect custom iir
   connect iir shaped
   connect shaped output
-  startAt custom 0
-  stopAt custom 1
+  start custom 0
+  stop custom 1
   noise <- noiseBuffer context 5 0.5
-  looped <- newBufferSource context
+  looped <- createBufferSource context
   setBuffer looped noise
   setLoop looped True
   setLoopStart looped 0.1
   setLoopEnd looped 0.2
   setParam (playbackRate looped) 1.5
   filterNode <- newFilter context Lowpass 1200
-  quiet <- newGain context
+  quiet <- createGain context
   quietLevel <- gain quiet
   setAutomationRate quietLevel KRate
-  setValueAt quietLevel 0 0.1
-  linearRampTo quietLevel 0.4 0.5
+  setValueAtTime quietLevel 0 0.1
+  linearRampToValueAtTime quietLevel 0.4 0.5
   connect looped filterNode
   connect filterNode quiet
   connect quiet output
   startFor looped 0.1 0.1 0.6
-  impulse <- newBuffer context 1 2205 rate
+  impulse <- createBuffer context 1 2205 rate
   writeChannel impulse 0 (take 2205 (parkMiller 77))
-  room <- newConvolver context
+  room <- createConvolver context
   setNormalize room False
   setBuffer room impulse
-  dry <- newOscillator context
-  setWave dry Square
+  dry <- createOscillator context
+  setOscillatorType dry Square
   setParam (frequency dry) 110
-  wet <- newGain context
+  wet <- createGain context
   setParam (gain wet) 0.02
   connect dry wet
   connect wet room
   connect room output
-  startAt dry 0.2
-  stopAt dry 0.6
-  startRendering context
+  start dry 0.2
+  stop dry 0.6
+  must (startRendering_ context)
 
 renderSample :: IO AudioBuffer
 renderSample = do
   context <- newOfflineAudioContext 1 (seconds 1) rate
   output <- destination context
-  bytes <- jsg0 "__wavBytes"
-  decoded <- decodeAudioData context bytes
+  bytes <- ArrayBuffer <$> jsg0 "__wavBytes"
+  decoded <- must (decodeAudioData_ context bytes)
   url <- fromJSValUnchecked =<< jsg0 "__wavUrl"
-  fetched <- fetchAudioBuffer context url
-  first <- newBufferSource context
+  fetched <- must (fetchAudioBuffer_ context url)
+  first <- createBufferSource context
   setBuffer first decoded
   connect first output
-  startAt first 0
-  second <- newBufferSource context
+  start first 0
+  second <- createBufferSource context
   setBuffer second fetched
   setParam (detune second) 700
   connect second output
-  startAt second 0.5
-  startRendering context
+  start second 0.5
+  must (startRendering_ context)
 
 renderWorklet :: Object -> IO AudioBuffer
 renderWorklet target = do
   context <- newOfflineAudioContext 1 (seconds 0.5) rate
   output <- destination context
-  addWorkletModule context "worklet.js"
+  must (addModule_ context "worklet.js")
   counts <- toJSVal [1 :: Int]
   options <- createWith [("outputChannelCount" :: MisoString, counts)]
   node <- newAudioWorkletNodeWith context "half-gain" options
@@ -506,52 +743,52 @@ renderWorklet target = do
     Nothing -> setField target "workletLevelParam" False
     Just level -> do
       setField target "workletLevelParam" True
-      setValueAt level 1 0
-      linearRampTo level 0.1 0.4
-  tone <- newOscillator context
+      setValueAtTime level 1 0
+      linearRampToValueAtTime level 0.1 0.4
+  tone <- createOscillator context
   setParam (frequency tone) 300
   connect tone node
   connect node output
-  startAt tone 0
-  stopAt tone 0.5
-  startRendering context
+  start tone 0
+  stop tone 0.5
+  must (startRendering_ context)
 
 analysisReadings :: Object -> IO ()
 analysisReadings target = do
   context <- newOfflineAudioContext 1 (seconds 1) rate
   output <- destination context
-  tone <- newOscillator context
+  tone <- createOscillator context
   setParam (frequency tone) 1000
   squeeze <- newCompressor context (-40) 0 20 0.001 0.1
-  meter <- newAnalyser context
+  meter <- createAnalyser context
   setFftSize meter 1024
-  setSmoothing meter 0
+  setSmoothingTimeConstant meter 0
   setMinDecibels meter (-90)
   setMaxDecibels meter (-10)
   connect tone squeeze
   connect squeeze meter
   connect meter output
-  startAt tone 0
-  reached <- suspendOfflineAt context 0.5
+  start tone 0
+  reached <- suspendOfflineAt_ context 0.5
   finished <- newEmptyMVar
   void . forkIO $ do
-    reached
-    setField target "time" =<< floatTimeDomainData meter
-    setField target "frequency" =<< floatFrequencyData meter
-    setField target "byteTime" =<< byteTimeDomainData meter
-    setField target "byteFrequency" =<< byteFrequencyData meter
+    must reached
+    setField target "time" =<< getFloatTimeDomainData meter
+    setField target "frequency" =<< getFloatFrequencyData meter
+    setField target "byteTime" =<< getByteTimeDomainData meter
+    setField target "byteFrequency" =<< getByteFrequencyData meter
     setField target "reduction" . (: []) =<< reduction squeeze
     resumeOffline context
     putMVar finished ()
-  void (startRendering context)
+  void (must (startRendering_ context))
   takeMVar finished
   biquad <- newFilter context Peaking 1000
   setParam (q biquad) 2
   setParam (gain biquad) 6
-  iir <- newIIRFilter context [0.1, 0.2, 0.1] [1, -0.5, 0.2]
+  iir <- createIIRFilter context [0.1, 0.2, 0.1] [1, -0.5, 0.2]
   let hertz = [100, 440, 1000, 4000]
-  biquadResponse <- frequencyResponse biquad hertz
-  iirResponse <- frequencyResponse iir hertz
+  biquadResponse <- getFrequencyResponse biquad hertz
+  iirResponse <- getFrequencyResponse iir hertz
   setField target "biquadMagnitude" (map fst biquadResponse)
   setField target "biquadPhase" (map snd biquadResponse)
   setField target "iirMagnitude" (map fst iirResponse)
@@ -574,7 +811,7 @@ benchmarks target = do
   let samples = take 96000 (parkMiller 3)
   void (evaluate (sum samples))
   context <- newOfflineAudioContext 1 44100 rate
-  buffer <- newBuffer context 1 96000 rate
+  buffer <- createBuffer context 1 96000 rate
   writeTime <- timed (writeChannel buffer 0 samples)
   setField target "writeChannel96k" writeTime
   arrayTime <- timed $ do
@@ -582,7 +819,7 @@ benchmarks target = do
     typed <- flip new [list] =<< jsg ("Float32Array" :: MisoString)
     void ((buffer # ("copyToChannel" :: MisoString)) (typed, 0 :: Int))
   setField target "viaArray96k" arrayTime
-  master <- newGain context
+  master <- createGain context
   noteTime <- timed (replicateM_ 1000 (scheduleNotes context master 0 [Note Sine 0 440 (Just (880, 0.1)) 0.3 0.1 0.12]))
   setField target "schedule1000Notes" noteTime
   voiceContext <- newOfflineAudioContext 1 44100 rate
@@ -591,27 +828,29 @@ benchmarks target = do
 
 benchVoice :: OfflineAudioContext -> IO ()
 benchVoice context = do
-  out <- newGain context
+  out <- createGain context
   outLevel <- gain out
-  setValueAt outLevel 0 0
-  linearRampTo outLevel 0.5 0.004
-  setTargetAt outLevel 0.1 0.004 0.17
-  overtone <- newGain context
+  setValueAtTime outLevel 0 0
+  linearRampToValueAtTime outLevel 0.5 0.004
+  setTargetAtTime outLevel 0.1 0.004 0.17
+  overtone <- createGain context
   setParam (gain overtone) 0.35
   connect overtone out
   lowpass <- newFilter context Lowpass 3500
   connect lowpass out
-  click <- newGain context
+  click <- createGain context
   connect click lowpass
   forM_ [(Sine, 220, out), (Sine, 440, overtone), (Triangle, 1320, click)] $ \(wave, hz, target) -> do
-    node <- newOscillator context
-    setWave node wave
+    node <- createOscillator context
+    setOscillatorType node wave
     nodeFrequency <- frequency node
-    setValueAt nodeFrequency hz 0
+    setValueAtTime nodeFrequency hz 0
     connect node target
-    startAt node 0
-    stopAt node 0.5
+    start node 0
+    stop node 0.5
 
+-- XXX: Workaround for a GHC wasm bug that blows up compile times. Keep.
+{-# NOINLINE checks #-}
 checks :: Object -> IO ()
 checks target = do
   context <- newOfflineAudioContext 1 4410 rate
@@ -619,16 +858,16 @@ checks target = do
   setField target "sampleRate" (rateRead == rate)
   stateName <- contextState context
   setField target "offlineStartsSuspended" (stateName == Suspended)
-  buffer <- newBuffer context 2 4 rate
+  buffer <- createBuffer context 2 4 rate
   writeChannel buffer 1 [0.5, -0.25, 0.125, 1]
   roundTrip <- readChannel buffer 1
   setField target "writeThenRead" (roundTrip == [0.5, -0.25, 0.125, 1])
   frames <- bufferLength buffer
-  channels <- bufferChannels buffer
+  channels <- numberOfChannels buffer
   bufferRate <- bufferSampleRate buffer
   setField target "bufferShape" (frames == 4 && channels == 2 && bufferRate == rate)
-  node <- newGain context
-  other <- newGain context
+  node <- createGain context
+  other <- createGain context
   connected <- gain other
   connectParam node connected
   disconnectParam node connected
@@ -643,29 +882,29 @@ checks target = do
   endContext <- newOfflineAudioContext 1 4410 rate
   endOutput <- destination endContext
   forM_ [0 .. 49 :: Int] $ \index -> do
-    source <- newOscillator endContext
+    source <- createOscillator endContext
     connect source endOutput
-    startAt source 0
-    stopAt source (fromIntegral index * 0.001 + 0.001)
-    onEnded source (modifyIORef' ended (+ 1))
-  void (startRendering endContext)
+    start source 0
+    stop source (fromIntegral index * 0.001 + 0.001)
+    onEnded_ source (modifyIORef' ended (+ 1))
+  void (must (startRendering_ endContext))
   void (waitFor 2000 ((== 50) <$> readIORef ended))
   endedCount <- readIORef ended
   setField target "onEndedCount" endedCount
   paramContext <- newOfflineAudioContext 2 4410 rate
-  level <- gain =<< newGain paramContext
+  level <- gain =<< createGain paramContext
   setValue level 0.5
   levelValue <- paramValue level
-  levelDefault <- paramDefault level
-  levelMin <- paramMin level
-  levelMax <- paramMax level
+  levelDefault <- defaultValue level
+  levelMin <- minValue level
+  levelMax <- maxValue level
   setField target "paramReads" (levelValue == 0.5 && levelDefault == 1 && levelMin < 0 && levelMax > 1)
-  splitter <- newChannelSplitter paramContext 3
-  merger <- newChannelMerger paramContext 4
+  splitter <- createChannelSplitter paramContext 3
+  merger <- createChannelMerger paramContext 4
   splitterOutputs <- numberOfOutputs splitter
   mergerInputs <- numberOfInputs merger
   setField target "channelPorts" (splitterOutputs == 3 && mergerInputs == 4)
-  countNode <- newGain paramContext
+  countNode <- createGain paramContext
   setChannelCount countNode 1
   countRead <- channelCount countNode
   setField target "channelCount" (countRead == 1)
@@ -675,47 +914,49 @@ checks target = do
   setField target "maxChannelCount" (outputChannels == 2)
   duration <- bufferDuration buffer
   setField target "bufferDuration" (duration == 4 / rate)
-  meter <- newAnalyser paramContext
+  meter <- createAnalyser paramContext
   setFftSize meter 2048
   meterSize <- fftSize meter
   meterBins <- frequencyBinCount meter
   setField target "analyserSizes" (meterSize == 2048 && meterBins == 1024)
-  hrtf <- newPanner paramContext
+  hrtf <- createPanner paramContext
   setPanningModel hrtf HRTF
   model <- fromJSValUnchecked =<< (hrtf ! "panningModel")
   setField target "panningModelHrtf" ((model :: MisoString) == "HRTF")
   rawNode <- RawDelay <$> (paramContext # "createDelay") (0.5 :: Double)
   rawParam <- AudioParam <$> (rawNode ! "delayTime")
-  setValueAt rawParam 0.25 0
+  setValueAtTime rawParam 0.25 0
   connect rawNode =<< destination paramContext
   disconnect rawNode
   setField target "customNodeAndParam" True
-  garbage <- jsg0 "__garbageBytes"
-  badDecode <- try (decodeAudioData paramContext garbage)
-  setField target "badDecodeThrows" (either (\(_ :: SomeException) -> True) (const False) badDecode)
+  garbage <- ArrayBuffer <$> jsg0 "__garbageBytes"
+  badDecode <- decodeAudioData_ paramContext garbage
+  setField target "badDecodeReportsError" (isLeft badDecode)
   states <- newIORef []
   stateContext <- newOfflineAudioContext 1 441 rate
-  stopListening <- onStateChange stateContext (\state -> modifyIORef' states (state :))
-  void (startRendering stateContext)
+  stateThread <- forkIO (contextStateSub stateContext id (\state -> modifyIORef' states (state :)) (pure ()))
+  sleep 10
+  void (must (startRendering_ stateContext))
   void (waitFor 2000 ((Closed `elem`) <$> readIORef states))
   seen <- readIORef states
-  stopListening
-  stopListening
+  killThread stateThread
   setField target "stateChangeSeen" (Closed `elem` seen)
   silenced <- newIORef (0 :: Int)
   quietContext <- newOfflineAudioContext 1 441 rate
-  stopQuiet <- onStateChange quietContext (\_ -> modifyIORef' silenced (+ 1))
-  stopQuiet
-  void (startRendering quietContext)
+  quietThread <- forkIO (contextStateSub quietContext id (\_ -> modifyIORef' silenced (+ 1)) (pure ()))
+  sleep 10
+  killThread quietThread
+  sleep 10
+  void (must (startRendering_ quietContext))
   sleep 100
   silencedCount <- readIORef silenced
   setField target "stateChangeUnsubscribed" (silencedCount == 0)
   completed <- newIORef (0 :: Int)
   completeContext <- newOfflineAudioContext 1 441 rate
-  onComplete completeContext $ \rendered -> do
+  onComplete_ completeContext $ \rendered -> do
     frames' <- bufferLength rendered
     modifyIORef' completed (+ frames')
-  void (startRendering completeContext)
+  void (must (startRendering_ completeContext))
   void (waitFor 2000 ((== 441) <$> readIORef completed))
   completedFrames <- readIORef completed
   setField target "onCompleteBuffer" (completedFrames == 441)
@@ -733,6 +974,66 @@ checks target = do
   setField global "AudioContext" original
   setField global "webkitAudioContext" legacy
   setField target "noConstructorIsNothing" (null missing)
+
+-- XXX: Workaround for a GHC wasm bug that blows up compile times. Keep.
+{-# NOINLINE effectChecks #-}
+effectChecks :: Object -> IO ()
+effectChecks target = do
+  renderContext <- newOfflineAudioContext 1 441 rate
+  rendered <- captured (startRendering renderContext)
+  setField target "effectStartRendering" (isRight rendered)
+  loadContext <- newOfflineAudioContext 1 441 rate
+  bytes <- ArrayBuffer <$> jsg0 "__wavBytes"
+  decoded <- captured (decodeAudioData loadContext bytes)
+  setField target "effectDecodeAudioData" (isRight decoded)
+  garbage <- ArrayBuffer <$> jsg0 "__garbageBytes"
+  badDecode <- captured (decodeAudioData loadContext garbage)
+  setField target "effectDecodeAudioDataError" (either (/= "") (const False) badDecode)
+  url <- fromJSValUnchecked =<< jsg0 "__wavUrl"
+  fetched <- captured (fetchAudioBuffer loadContext url)
+  setField target "effectFetchAudioBuffer" (isRight fetched)
+  badFetch <- captured (fetchAudioBuffer loadContext "data:,not-audio")
+  setField target "effectFetchAudioBufferError" (either (/= "") (const False) badFetch)
+  missingFile <- captured (fetchAudioBuffer loadContext "absent.wav")
+  setField target "effectFetchAudioBufferStatus" (either (== "absent.wav: HTTP 404") (const False) missingFile)
+  moduleLoaded <- capturedDone (addModule loadContext "worklet.js")
+  setField target "effectAddModule" (isRight moduleLoaded)
+  bare <- unObject <$> create
+  noWorklet <- capturedDone (addModule (OfflineAudioContext bare) "worklet.js")
+  setField target "effectAddModuleUnavailable" (isLeft noWorklet)
+  noSink <- capturedDone (setSinkId (AudioContext bare) "")
+  setField target "effectSetSinkIdUnavailable" (isLeft noSink)
+  noSuspend <- capturedDone (suspendOfflineAt (OfflineAudioContext bare) 0.05)
+  setField target "effectSuspendOfflineAtUnavailable" (isLeft noSuspend)
+  endContext <- newOfflineAudioContext 1 441 rate
+  endOutput <- destination endContext
+  source <- createOscillator endContext
+  connect source endOutput
+  start source 0
+  stop source 0.001
+  sourceEnded <- newEmptyMVar
+  runEffects (onEnded source ()) (putMVar sourceEnded)
+  sleep 10
+  void (must (startRendering_ endContext))
+  takeMVar sourceEnded
+  setField target "effectOnEnded" True
+  completeContext <- newOfflineAudioContext 1 441 rate
+  completed <- newEmptyMVar
+  runEffects (onComplete completeContext id) (putMVar completed)
+  sleep 10
+  void (must (startRendering_ completeContext))
+  completedFrames <- bufferLength =<< takeMVar completed
+  setField target "effectOnComplete" (completedFrames == 441)
+  suspendContext <- newOfflineAudioContext 1 4410 rate
+  reached <- newEmptyMVar
+  runEffects (suspendOfflineAt suspendContext 0.05 True (const False)) (putMVar reached)
+  sleep 10
+  finished <- newEmptyMVar
+  void . forkIO $ putMVar finished =<< startRendering_ suspendContext
+  suspended <- takeMVar reached
+  resumeOffline suspendContext
+  resumed <- takeMVar finished
+  setField target "effectSuspendOfflineAt" (suspended && isRight resumed)
 
 waitFor :: Int -> IO Bool -> IO Bool
 waitFor budget condition = do
@@ -757,7 +1058,7 @@ sleep ms' = do
 
 settledPeak :: AnalyserNode -> IO Double
 settledPeak meter = do
-  let peak = maximum . map abs <$> floatTimeDomainData meter
+  let peak = maximum . map abs <$> getFloatTimeDomainData meter
   void (waitFor 5000 ((> 0.1) <$> peak))
   peak
 
@@ -780,13 +1081,13 @@ liveChecks target = do
       latency <- baseLatency context
       setField target "baseLatencyPositive" (latency > 0)
       sleep 100
-      stamp <- outputTimestamp context
+      stamp <- getOutputTimestamp context
       setField target "outputTimestamp" (outputContextTime stamp >= 0 && outputPerformanceTime stamp >= 0)
       sinkAvailable <- hasSetSinkId context
       setField target "sinkAvailable" sinkAvailable
       when sinkAvailable $ do
-        setSinkId context ""
-        setField target "sinkSet" True
+        sinkSet <- capturedDone (setSinkId context "")
+        setField target "sinkSet" (isRight sinkSet)
       playbackStats context >>= \case
         Nothing -> setField target "statsAvailable" False
         Just stats -> do
@@ -799,22 +1100,22 @@ liveChecks target = do
           average <- averageLatency stats
           resetLatency stats
           setField target "statsRead" (total >= 0 && underrun >= 0 && events >= 0 && lowest >= 0 && highest >= lowest && average >= 0)
-      sink <- newMediaStreamDestination context
-      tone <- newOscillator context
+      sink <- createMediaStreamDestination context
+      tone <- createOscillator context
       connect tone sink
-      startAt tone 0
+      start tone 0
       stream <- destinationStream sink
-      source <- newMediaStreamSource context stream
-      streamMeter <- newAnalyser context
+      source <- createMediaStreamSource context stream
+      streamMeter <- createAnalyser context
       connect source streamMeter
       setField target "streamPeak" =<< settledPeak streamMeter
       tracks <- (stream # "getAudioTracks") ()
       track <- tracks DSL.!! 0
-      trackSource <- newMediaStreamTrackSource context track
+      trackSource <- createMediaStreamTrackSource context track
       setField target "trackSourceAvailable" (isJust trackSource)
       element <- jsg0 "__wavAudio"
-      mediaSource <- newMediaElementSource context element
-      mediaMeter <- newAnalyser context
+      mediaSource <- createMediaElementSource context (Media element)
+      mediaMeter <- createAnalyser context
       connect mediaSource mediaMeter
       void (evaluate =<< await =<< (element # "play") ())
       setField target "mediaPeak" =<< settledPeak mediaMeter
@@ -873,6 +1174,7 @@ main = do
     setField state "analysis" analysis
     analysisReadings analysis
     checks results
+    effectChecks results
     benchmarks bench
   case outcome of
     Left (failure :: SomeException) -> setField state "failed" (ms (displayException failure))
