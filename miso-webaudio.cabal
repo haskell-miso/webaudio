@@ -1,0 +1,61 @@
+cabal-version:      3.0
+name:               miso-webaudio
+version:            0.1.0.0
+synopsis:           Web Audio for miso
+description:        Typed bindings to the Web Audio graph, and a fire-and-forget note player on top. Written with Miso.DSL alone, so it needs no foreign imports, no eval and no flags on the JS and WebAssembly backends.
+homepage:           https://gitlab.com/dpwiz/miso-webaudio
+license:            BSD-3-Clause
+license-file:       LICENSE
+author:             IC Rainbow
+maintainer:         aenor.realm@gmail.com
+category:           Web, Sound
+build-type:         Simple
+extra-doc-files:    CHANGELOG.md, README.md
+
+source-repository head
+  type:     git
+  location: https://gitlab.com/dpwiz/miso-webaudio.git
+
+common warnings
+  ghc-options:
+    -ferror-spans -Wall
+
+common language
+  default-language:
+    GHC2021
+  default-extensions:
+    LambdaCase
+    OverloadedStrings
+
+library
+  import:
+    language, warnings
+  exposed-modules:
+    Miso.WebAudio
+    Miso.WebAudio.Node
+    Miso.WebAudio.Note
+    Miso.WebAudio.Player
+  hs-source-dirs:
+    src
+  build-depends:
+    base < 5, miso >= 1.14 && < 1.15
+
+executable webaudio-check
+  import:
+    language, warnings
+  main-is:
+    Main.hs
+  hs-source-dirs:
+    test/browser
+  build-depends:
+    base, miso, miso-webaudio
+  if !(arch(javascript) || arch(wasm32))
+    buildable: False
+  if arch(wasm32)
+    ghc-options:
+      -no-hs-main -optl-mexec-model=reactor "-optl-Wl,--export=hs_start"
+    cpp-options:
+      -DWASM
+  if arch(javascript)
+    ld-options:
+      -sEXPORTED_RUNTIME_METHODS=HEAP8
